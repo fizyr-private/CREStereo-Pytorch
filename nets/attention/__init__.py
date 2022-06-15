@@ -1,2 +1,2 @@
 from .transformer import LocalFeatureTransformer
-from .position_encoding import PositionEncodingSine
+from .position_encoding import position_encoding_sine

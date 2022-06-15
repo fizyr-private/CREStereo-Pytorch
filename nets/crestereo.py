@@ -8,7 +8,7 @@ from .update import BasicUpdateBlock
 from .extractor import BasicEncoder
 from .corr import AGCL
 
-from .attention import PositionEncodingSine, LocalFeatureTransformer
+from .attention import position_encoding_sine, LocalFeatureTransformer
 
 #Ref: https://github.com/princeton-vl/RAFT/blob/master/core/raft.py
 class CREStereo(nn.Module):
@@ -119,14 +119,11 @@ class CREStereo(nn.Module):
         inp_dw16 = F.avg_pool2d(inp, 4, stride=4)
 
         # positional encoding and self-attention
-        pos_encoding_fn_small = PositionEncodingSine(
-            d_model=256, max_shape=(image1.shape[2] // 16, image1.shape[3] // 16)
-        )
         # 'n c h w -> n (h w) c'
-        x_tmp = pos_encoding_fn_small(fmap1_dw16)
+        x_tmp = position_encoding_sine(fmap1_dw16, d_model=256, max_shape=(image1.shape[2] // 16, image1.shape[3] // 16))
         fmap1_dw16 = x_tmp.permute(0, 2, 3, 1).reshape(x_tmp.shape[0], x_tmp.shape[2] * x_tmp.shape[3], x_tmp.shape[1])
         # 'n c h w -> n (h w) c'
-        x_tmp = pos_encoding_fn_small(fmap2_dw16)
+        x_tmp = position_encoding_sine(fmap2_dw16, d_model=256, max_shape=(image1.shape[2] // 16, image1.shape[3] // 16))
         fmap2_dw16 = x_tmp.permute(0, 2, 3, 1).reshape(x_tmp.shape[0], x_tmp.shape[2] * x_tmp.shape[3], x_tmp.shape[1])
 
         fmap1_dw16, fmap2_dw16 = self.self_att_fn(fmap1_dw16, fmap2_dw16)
