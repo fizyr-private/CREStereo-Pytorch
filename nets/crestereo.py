@@ -10,18 +10,6 @@ from .corr import AGCL
 
 from .attention import PositionEncodingSine, LocalFeatureTransformer
 
-try:
-    autocast = torch.cuda.amp.autocast
-except:
-    # dummy autocast for PyTorch < 1.6
-    class autocast:
-        def __init__(self, enabled):
-            pass
-        def __enter__(self):
-            pass
-        def __exit__(self, *args):
-            pass
-
 #Ref: https://github.com/princeton-vl/RAFT/blob/master/core/raft.py
 class CREStereo(nn.Module):
     def __init__(self, max_disp: int = 192, mixed_precision: bool = False, test_mode: bool = False, iters: int = 10):
@@ -98,57 +86,54 @@ class CREStereo(nn.Module):
         hdim = self.hidden_dim
 
         # run the feature network
-        with autocast(enabled=self.mixed_precision):
-            fmap1, fmap2 = self.fnet([image1, image2])        
-        
+        fmap1, fmap2 = self.fnet([image1, image2])
+
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
 
-        with autocast(enabled=self.mixed_precision):
+        # 1/4 -> 1/8
+        # feature
+        fmap1_dw8 = F.avg_pool2d(fmap1, 2, stride=2)
+        fmap2_dw8 = F.avg_pool2d(fmap2, 2, stride=2)
 
-            # 1/4 -> 1/8
-            # feature
-            fmap1_dw8 = F.avg_pool2d(fmap1, 2, stride=2)
-            fmap2_dw8 = F.avg_pool2d(fmap2, 2, stride=2)
+        # offset
+        offset_dw8 = self.conv_offset_8(fmap1_dw8)
+        offset_dw8 = self.range_8 * (torch.sigmoid(offset_dw8) - 0.5) * 2.0
 
-            # offset
-            offset_dw8 = self.conv_offset_8(fmap1_dw8)
-            offset_dw8 = self.range_8 * (torch.sigmoid(offset_dw8) - 0.5) * 2.0
+        # context
+        net, inp = torch.split(fmap1, [hdim,hdim], dim=1)
+        net = torch.tanh(net)
+        inp = F.relu(inp)
+        net_dw8 = F.avg_pool2d(net, 2, stride=2)
+        inp_dw8 = F.avg_pool2d(inp, 2, stride=2)
 
-            # context
-            net, inp = torch.split(fmap1, [hdim,hdim], dim=1)
-            net = torch.tanh(net)
-            inp = F.relu(inp)
-            net_dw8 = F.avg_pool2d(net, 2, stride=2)
-            inp_dw8 = F.avg_pool2d(inp, 2, stride=2)
+        # 1/4 -> 1/16
+        # feature
+        fmap1_dw16 = F.avg_pool2d(fmap1, 4, stride=4)
+        fmap2_dw16 = F.avg_pool2d(fmap2, 4, stride=4)
+        offset_dw16 = self.conv_offset_16(fmap1_dw16)
+        offset_dw16 = self.range_16 * (torch.sigmoid(offset_dw16) - 0.5) * 2.0
 
-            # 1/4 -> 1/16
-            # feature
-            fmap1_dw16 = F.avg_pool2d(fmap1, 4, stride=4)
-            fmap2_dw16 = F.avg_pool2d(fmap2, 4, stride=4)
-            offset_dw16 = self.conv_offset_16(fmap1_dw16)
-            offset_dw16 = self.range_16 * (torch.sigmoid(offset_dw16) - 0.5) * 2.0
+        # context
+        net_dw16 = F.avg_pool2d(net, 4, stride=4)
+        inp_dw16 = F.avg_pool2d(inp, 4, stride=4)
 
-            # context
-            net_dw16 = F.avg_pool2d(net, 4, stride=4)
-            inp_dw16 = F.avg_pool2d(inp, 4, stride=4)
+        # positional encoding and self-attention
+        pos_encoding_fn_small = PositionEncodingSine(
+            d_model=256, max_shape=(image1.shape[2] // 16, image1.shape[3] // 16)
+        )
+        # 'n c h w -> n (h w) c'
+        x_tmp = pos_encoding_fn_small(fmap1_dw16)
+        fmap1_dw16 = x_tmp.permute(0, 2, 3, 1).reshape(x_tmp.shape[0], x_tmp.shape[2] * x_tmp.shape[3], x_tmp.shape[1])
+        # 'n c h w -> n (h w) c'
+        x_tmp = pos_encoding_fn_small(fmap2_dw16)
+        fmap2_dw16 = x_tmp.permute(0, 2, 3, 1).reshape(x_tmp.shape[0], x_tmp.shape[2] * x_tmp.shape[3], x_tmp.shape[1])
 
-            # positional encoding and self-attention
-            pos_encoding_fn_small = PositionEncodingSine(
-                d_model=256, max_shape=(image1.shape[2] // 16, image1.shape[3] // 16)
-            )
-            # 'n c h w -> n (h w) c'
-            x_tmp = pos_encoding_fn_small(fmap1_dw16)
-            fmap1_dw16 = x_tmp.permute(0, 2, 3, 1).reshape(x_tmp.shape[0], x_tmp.shape[2] * x_tmp.shape[3], x_tmp.shape[1])
-            # 'n c h w -> n (h w) c'
-            x_tmp = pos_encoding_fn_small(fmap2_dw16)
-            fmap2_dw16 = x_tmp.permute(0, 2, 3, 1).reshape(x_tmp.shape[0], x_tmp.shape[2] * x_tmp.shape[3], x_tmp.shape[1])
-
-            fmap1_dw16, fmap2_dw16 = self.self_att_fn(fmap1_dw16, fmap2_dw16)
-            fmap1_dw16, fmap2_dw16 = [
-                x.reshape(x.shape[0], image1.shape[2] // 16, -1, x.shape[2]).permute(0, 3, 1, 2)
-                for x in [fmap1_dw16, fmap2_dw16]
-            ]
+        fmap1_dw16, fmap2_dw16 = self.self_att_fn(fmap1_dw16, fmap2_dw16)
+        fmap1_dw16, fmap2_dw16 = [
+            x.reshape(x.shape[0], image1.shape[2] // 16, -1, x.shape[2]).permute(0, 3, 1, 2)
+            for x in [fmap1_dw16, fmap2_dw16]
+        ]
 
         corr_fn = AGCL(fmap1, fmap2)
         corr_fn_dw8 = AGCL(fmap1_dw8, fmap2_dw8)
@@ -183,10 +168,9 @@ class CREStereo(nn.Module):
                     flow_dw16, offset_dw16, small_patch=small_patch
                     )
 
-                with autocast(enabled=self.mixed_precision):
-                    net_dw16, up_mask, delta_flow = self.update_block(
-                        net_dw16, inp_dw16, out_corrs, flow_dw16
-                    )
+                net_dw16, up_mask, delta_flow = self.update_block(
+                    net_dw16, inp_dw16, out_corrs, flow_dw16
+                )
 
                 flow_dw16 = flow_dw16 + delta_flow
                 flow = self.convex_upsample(flow_dw16, up_mask, rate=4)
@@ -216,10 +200,9 @@ class CREStereo(nn.Module):
                 flow_dw8 = flow_dw8.detach()
                 out_corrs = corr_fn_dw8(flow_dw8, offset_dw8, small_patch=small_patch)
 
-                with autocast(enabled=self.mixed_precision):
-                    net_dw8, up_mask, delta_flow = self.update_block(
-                        net_dw8, inp_dw8, out_corrs, flow_dw8
-                    )
+                net_dw8, up_mask, delta_flow = self.update_block(
+                    net_dw8, inp_dw8, out_corrs, flow_dw8
+                )
 
                 flow_dw8 = flow_dw8 + delta_flow
                 flow = self.convex_upsample(flow_dw8, up_mask, rate=4)
@@ -249,8 +232,7 @@ class CREStereo(nn.Module):
             flow = flow.detach()
             out_corrs = corr_fn(flow, None, small_patch=small_patch, iter_mode=True)
 
-            with autocast(enabled=self.mixed_precision):
-                net, up_mask, delta_flow = self.update_block(net, inp, out_corrs, flow)
+            net, up_mask, delta_flow = self.update_block(net, inp, out_corrs, flow)
 
             flow = flow + delta_flow
             flow_up = -self.convex_upsample(flow, up_mask, rate=4)

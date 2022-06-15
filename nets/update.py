@@ -77,7 +77,7 @@ class BasicUpdateBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(256, mask_size**2 *9, 1, padding=0))
 
-    def forward(self, net, inp, corr, flow, upsample=True):
+    def forward(self, net, inp, corr, flow):
         # print(inp.shape, corr.shape, flow.shape)
         motion_features = self.encoder(flow, corr)
         # print(motion_features.shape, inp.shape)

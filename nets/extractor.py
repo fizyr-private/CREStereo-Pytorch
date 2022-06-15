@@ -100,10 +100,8 @@ class BasicEncoder(nn.Module):
     def forward(self, x: List[torch.Tensor]):
 
         # if input is list, combine batch dimension
-        is_list = isinstance(x, tuple) or isinstance(x, list)
-        if is_list:
-            batch_dim = x[0].shape[0]
-            x = torch.cat(x, dim=0)
+        batch_dim = x[0].shape[0]
+        x = torch.cat(x, dim=0)
 
         x = self.conv1(x)
         x = self.norm1(x)
@@ -118,7 +116,6 @@ class BasicEncoder(nn.Module):
         if self.dropout is not None:
             x = self.dropout(x)
 
-        if is_list:
-            x = torch.split(x, x.shape[0]//2, dim=0)
+        x = torch.split(x, x.shape[0] // 2, dim=0)
 
         return x
