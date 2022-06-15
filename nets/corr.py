@@ -1,9 +1,12 @@
+from typing import Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import bilinear_sampler, coords_grid, manual_pad
+from .attention import LocalFeatureTransformer
 
 class AGCL:
     """

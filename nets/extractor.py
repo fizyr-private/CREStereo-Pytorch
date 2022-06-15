@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from typing import Union, List
 
 # Ref: https://github.com/princeton-vl/RAFT/blob/master/core/extractor.py
 class ResidualBlock(nn.Module):
@@ -96,7 +97,7 @@ class BasicEncoder(nn.Module):
         self.in_planes = dim
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x: List[torch.Tensor]):
 
         # if input is list, combine batch dimension
         is_list = isinstance(x, tuple) or isinstance(x, list)

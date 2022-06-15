@@ -4,7 +4,7 @@ import numpy as np
 
 #Ref: https://github.com/princeton-vl/RAFT/blob/master/core/utils/utils.py
 
-def bilinear_sampler(img, coords, mode='bilinear', mask=False):
+def bilinear_sampler(img, coords, mode: str = 'bilinear'):
     """ Wrapper for grid_sample, uses pixel coordinates """
     H, W = img.shape[-2:]
     xgrid, ygrid = coords.split([1,1], dim=-1)
@@ -15,24 +15,20 @@ def bilinear_sampler(img, coords, mode='bilinear', mask=False):
     # img = F.grid_sample(img, grid, align_corners=True)
     img = bilinear_grid_sample(img, grid, align_corners=True)
 
-    if mask:
-        mask = (xgrid > -1) & (ygrid > -1) & (xgrid < 1) & (ygrid < 1)
-        return img, mask.float()
-
     return img
     
-def coords_grid(batch, ht, wd, device):
-    coords = torch.meshgrid(torch.arange(ht, device=device), torch.arange(wd, device=device), indexing='ij')
+def coords_grid(batch: int, ht: int, wd: int, device: torch.device):
+    coords = torch.meshgrid(torch.arange(ht, device=device), torch.arange(wd, device=device))
     coords = torch.stack(coords[::-1], dim=0).float()
     return coords[None].repeat(batch, 1, 1, 1)
 
-def manual_pad(x, pady, padx):
+def manual_pad(x, pady: int, padx: int):
 
-    pad = (padx, padx, pady, pady)  
+    pad = [padx, padx, pady, pady]
     return F.pad(x.clone().detach(), pad, "replicate")
 
 # Ref: https://zenn.dev/pinto0309/scraps/7d4032067d0160
-def bilinear_grid_sample(im, grid, align_corners=False):
+def bilinear_grid_sample(im: torch.Tensor, grid: torch.Tensor, align_corners: bool = False):
     """Given an input and a flow-field grid, computes the output using input
     values and pixel locations from grid. Supported only bilinear interpolation
     method to sample the input pixels.
@@ -77,7 +73,7 @@ def bilinear_grid_sample(im, grid, align_corners=False):
     wd = ((x - x0) * (y - y0)).unsqueeze(1)
 
     # Apply default for grid_sample function zero padding
-    im_padded = torch.nn.functional.pad(im, pad=[1, 1, 1, 1], mode='constant', value=0)
+    im_padded = torch.nn.functional.pad(im, pad=[1, 1, 1, 1], mode='constant', value=0.0)
     padded_h = h + 2
     padded_w = w + 2
     # save points positions after padding

@@ -1,3 +1,5 @@
+from typing import Optional, List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +24,7 @@ except:
 
 #Ref: https://github.com/princeton-vl/RAFT/blob/master/core/raft.py
 class CREStereo(nn.Module):
-    def __init__(self, max_disp=192, mixed_precision=False, test_mode=False):
+    def __init__(self, max_disp: int = 192, mixed_precision: bool = False, test_mode: bool = False, iters: int = 10):
         super(CREStereo, self).__init__()
 
         self.max_flow = max_disp
@@ -38,10 +40,10 @@ class CREStereo(nn.Module):
 
         # loftr
         self.self_att_fn = LocalFeatureTransformer(
-            d_model=256, nhead=8, layer_names=["self"] * 1, attention="linear"
+            d_model=256, nhead=8, layer_name="self", attention="linear"
         )
         self.cross_att_fn = LocalFeatureTransformer(
-            d_model=256, nhead=8, layer_names=["cross"] * 1, attention="linear"
+            d_model=256, nhead=8, layer_name="cross", attention="linear"
         )
 
         # adaptive search
@@ -55,12 +57,15 @@ class CREStereo(nn.Module):
         self.range_16 = 1
         self.range_8 = 1
 
+        self.iters = iters
+        self.test_mode = test_mode
+
     def freeze_bn(self):
         for m in self.modules():
             if isinstance(m, nn.BatchNorm2d):
                 m.eval()
 
-    def convex_upsample(self, flow, mask, rate=4):
+    def convex_upsample(self, flow, mask, rate: int = 4):
         """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
         N, _, H, W = flow.shape
         # print(flow.shape, mask.shape, rate)
@@ -81,7 +86,7 @@ class CREStereo(nn.Module):
         zero_flow = torch.cat((_x, _y), dim=1).to(fmap.device)
         return zero_flow
 
-    def forward(self, image1, image2, flow_init=None, iters=10, upsample=True, test_mode=False):
+    def forward(self, image1, image2, flow_init: Optional[torch.Tensor]) -> torch.Tensor:
         """ Estimate optical flow between pair of frames """
 
         image1 = 2 * (image1 / 255.0) - 1.0
@@ -91,7 +96,6 @@ class CREStereo(nn.Module):
         image2 = image2.contiguous()
 
         hdim = self.hidden_dim
-        cdim = self.context_dim
 
         # run the feature network
         with autocast(enabled=self.mixed_precision):
@@ -152,8 +156,8 @@ class CREStereo(nn.Module):
 
         # Cascaded refinement (1/16 + 1/8 + 1/4)
         predictions = []
-        flow = None
-        flow_up = None
+        flow: Optional[torch.Tensor] = None
+        flow_up: Optional[torch.Tensor] = None
         if flow_init is not None:
             scale = fmap1.shape[2] / flow_init.shape[2]
             flow = -scale * F.interpolate(
@@ -168,7 +172,7 @@ class CREStereo(nn.Module):
 
             # Recurrent Update Module
             # RUM: 1/16
-            for itr in range(iters // 2):
+            for itr in range(self.iters // 2):
                 if itr % 2 == 0:
                     small_patch = False
                 else:
@@ -203,7 +207,7 @@ class CREStereo(nn.Module):
             )
 
             # RUM: 1/8
-            for itr in range(iters // 2):
+            for itr in range(self.iters // 2):
                 if itr % 2 == 0:
                     small_patch = False
                 else:
@@ -236,7 +240,7 @@ class CREStereo(nn.Module):
             )
 
         # RUM: 1/4
-        for itr in range(iters):
+        for itr in range(self.iters):
             if itr % 2 == 0:
                 small_patch = False
             else:
