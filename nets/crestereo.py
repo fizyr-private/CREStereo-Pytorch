@@ -179,13 +179,16 @@ class CREStereo(nn.Module):
                 )
                 predictions.append(flow_up)
 
-            scale = fmap1_dw8.shape[2] / flow.shape[2]
-            flow_dw8 = -scale * F.interpolate(
-                flow,
-                size=(fmap1_dw8.shape[2], fmap1_dw8.shape[3]),
-                mode="bilinear",
-                align_corners=True,
-            )
+            if flow is not None:
+                scale = fmap1_dw8.shape[2] / flow.shape[2]
+                flow_dw8 = -scale * F.interpolate(
+                    flow,
+                    size=(fmap1_dw8.shape[2], fmap1_dw8.shape[3]),
+                    mode="bilinear",
+                    align_corners=True,
+                )
+            else:
+                raise RuntimeError("flow is unexpectedly None")
 
             # RUM: 1/8
             for itr in range(self.iters // 2):
@@ -235,7 +238,11 @@ class CREStereo(nn.Module):
             flow_up = -self.convex_upsample(flow, up_mask, rate=4)
             predictions.append(flow_up)
 
-        if self.test_mode:
-            return flow_up
+        # if self.test_mode:
+        #     return flow_up
 
-        return predictions
+#         return predictions
+        if flow_up is None:
+            raise RuntimeError("flow_up is unexpectedly None")
+        else:
+            return flow_up
