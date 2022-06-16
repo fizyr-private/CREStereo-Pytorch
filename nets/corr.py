@@ -29,7 +29,7 @@ def get_correlation(left_feature, right_feature, psize: Tuple[int, int] = (3, 3)
 
     return corr_final
 
-def corr_iter(coords, left_feature, right_feature, flow, small_patch):
+def corr_iter(coords, left_feature, right_feature, flow, small_patch: bool):
 
     flow_coords = coords + flow
     flow_coords = flow_coords.permute(0, 2, 3, 1)
@@ -58,7 +58,7 @@ def corr_iter(coords, left_feature, right_feature, flow, small_patch):
     return final_corr
 
 def corr_att_offset(
-    coords, left_feature, right_feature, flow, extra_offset, small_patch, att: Optional[nn.Module] = None
+    coords, left_feature, right_feature, flow, extra_offset, small_patch: bool, att: Optional[LocalFeatureTransformer] = None
 ):
 
     N, C, H, W = left_feature.shape
@@ -67,7 +67,7 @@ def corr_att_offset(
         left_feature = left_feature.permute(0, 2, 3, 1).reshape(N, H * W, C)  # 'n c h w -> n (h w) c'
         right_feature = right_feature.permute(0, 2, 3, 1).reshape(N, H * W, C)  # 'n c h w -> n (h w) c'
         # 'n (h w) c -> n c h w'
-        left_feature, right_feature = att(left_feature, right_feature)
+        left_feature, right_feature = att.forward(left_feature, right_feature)
         # 'n (h w) c -> n c h w'
         left_feature, right_feature = [
             x.reshape(N, H, W, C).permute(0, 3, 1, 2)
