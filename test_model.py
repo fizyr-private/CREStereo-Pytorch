@@ -2,14 +2,18 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import cv2
-from imread_from_url import imread_from_url
+import sys
+# from imread_from_url import imread_from_url
 
 from nets import Model
+import time
+
+import matplotlib.pyplot as plt
 
 device = 'cuda'
 
 #Ref: https://github.com/megvii-research/CREStereo/blob/master/test.py
-def inference(left, right, model, n_iter=20):
+def inference(left, right, model):
 
 	print("Model Forwarding...")
 	imgL = left.transpose(2, 0, 1)
@@ -34,17 +38,19 @@ def inference(left, right, model, n_iter=20):
 	)
 	# print(imgR_dw2.shape)
 	with torch.inference_mode():
-		pred_flow_dw2 = model(imgL_dw2, imgR_dw2, iters=n_iter, flow_init=None)
+		pred_flow_dw2 = model(imgL_dw2, imgR_dw2, flow_init=None)
 
-		pred_flow = model(imgL, imgR, iters=n_iter, flow_init=pred_flow_dw2)
+		pred_flow = model(imgL, imgR, flow_init=pred_flow_dw2)
 	pred_disp = torch.squeeze(pred_flow[:, 0, :, :]).cpu().detach().numpy()
 
 	return pred_disp
 
 if __name__ == '__main__':
 
-	left_img = imread_from_url("https://raw.githubusercontent.com/megvii-research/CREStereo/master/img/test/left.png")
-	right_img = imread_from_url("https://raw.githubusercontent.com/megvii-research/CREStereo/master/img/test/right.png")
+	# left_img = imread_from_url("https://raw.githubusercontent.com/megvii-research/CREStereo/master/img/test/left.png")
+	# right_img = imread_from_url("https://raw.githubusercontent.com/megvii-research/CREStereo/master/img/test/right.png")
+	left_img = cv2.imread(sys.argv[1])
+	right_img = cv2.imread(sys.argv[2])
 
 	in_h, in_w = left_img.shape[:2]
 
@@ -55,12 +61,14 @@ if __name__ == '__main__':
 
 	model_path = "models/crestereo_eth3d.pth"
 
-	model = Model(max_disp=256, mixed_precision=False, test_mode=True)
+	model = Model(max_disp=256, mixed_precision=False, test_mode=True, iters=20)
 	model.load_state_dict(torch.load(model_path), strict=True)
 	model.to(device)
 	model.eval()
 
-	pred = inference(imgL, imgR, model, n_iter=20)
+	start = time.time()
+	pred = inference(imgL, imgR, model)
+	print(time.time() - start)
 
 	t = float(in_w) / float(eval_w)
 	disp = cv2.resize(pred, (in_w, in_h), interpolation=cv2.INTER_LINEAR) * t
