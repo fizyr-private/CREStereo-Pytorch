@@ -8,144 +8,122 @@ import torch.nn.functional as F
 from .utils import bilinear_sampler, coords_grid, manual_pad
 from .attention import LocalFeatureTransformer
 
-class AGCL:
-    """
-    Implementation of Adaptive Group Correlation Layer (AGCL).
-    """
+def get_correlation(left_feature, right_feature, psize: Tuple[int, int] = (3, 3), dilate: Tuple[int, int] = (1, 1)):
 
-    def __init__(self, fmap1, fmap2, att=None):
-        self.fmap1 = fmap1
-        self.fmap2 = fmap2
+    N, C, H, W = left_feature.shape
 
-        self.att = att
+    di_y, di_x = dilate[0], dilate[1]
+    pady, padx = psize[0] // 2 * di_y, psize[1] // 2 * di_x
 
-        self.coords = coords_grid(fmap1.shape[0], fmap1.shape[2], fmap1.shape[3], fmap1.device)
+    right_pad = manual_pad(right_feature, pady, padx)
 
-    def __call__(self, flow, extra_offset, small_patch=False, iter_mode=False):
-        if iter_mode:
-            corr = self.corr_iter(self.fmap1, self.fmap2, flow, small_patch)
-        else:
-            corr = self.corr_att_offset(
-                self.fmap1, self.fmap2, flow, extra_offset, small_patch
-            )
-        return corr
+    corr_list = []
+    for h in range(0, pady * 2 + 1, di_y):
+        for w in range(0, padx * 2 + 1, di_x):
+            right_crop = right_pad[:, :, h : h + H, w : w + W]
+            assert right_crop.shape == left_feature.shape
+            corr = torch.mean(left_feature * right_crop, dim=1, keepdim=True)
+            corr_list.append(corr)
 
-    def get_correlation(self, left_feature, right_feature, psize=(3, 3), dilate=(1, 1)):
+    corr_final = torch.cat(corr_list, dim=1)
 
-        N, C, H, W = left_feature.shape
+    return corr_final
 
-        di_y, di_x = dilate[0], dilate[1]
-        pady, padx = psize[0] // 2 * di_y, psize[1] // 2 * di_x
+def corr_iter(coords, left_feature, right_feature, flow, small_patch):
 
-        right_pad = manual_pad(right_feature, pady, padx)
+    flow_coords = coords + flow
+    flow_coords = flow_coords.permute(0, 2, 3, 1)
+    right_feature = bilinear_sampler(right_feature, flow_coords)
 
-        corr_list = []
-        for h in range(0, pady * 2 + 1, di_y):
-            for w in range(0, padx * 2 + 1, di_x):
-                right_crop = right_pad[:, :, h : h + H, w : w + W]
-                assert right_crop.shape == left_feature.shape
-                corr = torch.mean(left_feature * right_crop, dim=1, keepdims=True)
-                corr_list.append(corr)
+    if small_patch:
+        psize_list = [(3, 3), (3, 3), (3, 3), (3, 3)]
+        dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
+    else:
+        psize_list = [(1, 9), (1, 9), (1, 9), (1, 9)]
+        dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
 
-        corr_final = torch.cat(corr_list, dim=1)
+    N, C, H, W = left_feature.shape
+    lefts = torch.split(left_feature, left_feature.shape[1]//4, dim=1)
+    rights = torch.split(right_feature, right_feature.shape[1]//4, dim=1)
 
-        return corr_final
+    corrs = []
+    for i in range(len(psize_list)):
+        corr = get_correlation(
+            lefts[i], rights[i], psize_list[i], dilate_list[i]
+        )
+        corrs.append(corr)
 
-    def corr_iter(self, left_feature, right_feature, flow, small_patch):
+    final_corr = torch.cat(corrs, dim=1)
 
-        coords = self.coords + flow
-        coords = coords.permute(0, 2, 3, 1)
-        right_feature = bilinear_sampler(right_feature, coords)
+    return final_corr
 
-        if small_patch:
-            psize_list = [(3, 3), (3, 3), (3, 3), (3, 3)]
-            dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
-        else:
-            psize_list = [(1, 9), (1, 9), (1, 9), (1, 9)]
-            dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
+def corr_att_offset(
+    coords, left_feature, right_feature, flow, extra_offset, small_patch, att: Optional[nn.Module] = None
+):
 
-        N, C, H, W = left_feature.shape
-        lefts = torch.split(left_feature, left_feature.shape[1]//4, dim=1)
-        rights = torch.split(right_feature, right_feature.shape[1]//4, dim=1)
+    N, C, H, W = left_feature.shape
 
-        corrs = []
-        for i in range(len(psize_list)):
-            corr = self.get_correlation(
-                lefts[i], rights[i], psize_list[i], dilate_list[i]
-            )
-            corrs.append(corr)
+    if att is not None:
+        left_feature = left_feature.permute(0, 2, 3, 1).reshape(N, H * W, C)  # 'n c h w -> n (h w) c'
+        right_feature = right_feature.permute(0, 2, 3, 1).reshape(N, H * W, C)  # 'n c h w -> n (h w) c'
+        # 'n (h w) c -> n c h w'
+        left_feature, right_feature = att(left_feature, right_feature)
+        # 'n (h w) c -> n c h w'
+        left_feature, right_feature = [
+            x.reshape(N, H, W, C).permute(0, 3, 1, 2)
+            for x in [left_feature, right_feature]
+        ]
 
-        final_corr = torch.cat(corrs, dim=1)
+    lefts = torch.split(left_feature, left_feature.shape[1]//4, dim=1)
+    rights = torch.split(right_feature, right_feature.shape[1]//4, dim=1)
 
-        return final_corr
+    C = C // 4
 
-    def corr_att_offset(
-        self, left_feature, right_feature, flow, extra_offset, small_patch
-    ):
+    if small_patch:
+        psize_list = [(3, 3), (3, 3), (3, 3), (3, 3)]
+        dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
+    else:
+        psize_list = [(1, 9), (1, 9), (1, 9), (1, 9)]
+        dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
 
-        N, C, H, W = left_feature.shape
+    search_num = 9
+    extra_offset = extra_offset.reshape(N, search_num, 2, H, W).permute(0, 1, 3, 4, 2) # [N, search_num, 1, 1, 2]
 
-        if self.att is not None:
-            left_feature = left_feature.permute(0, 2, 3, 1).reshape(N, H * W, C)  # 'n c h w -> n (h w) c'
-            right_feature = right_feature.permute(0, 2, 3, 1).reshape(N, H * W, C)  # 'n c h w -> n (h w) c'
-            # 'n (h w) c -> n c h w'
-            left_feature, right_feature = self.att(left_feature, right_feature)
-            # 'n (h w) c -> n c h w'
-            left_feature, right_feature = [
-                x.reshape(N, H, W, C).permute(0, 3, 1, 2)
-                for x in [left_feature, right_feature]
-            ]
+    corrs = []
+    for i in range(len(psize_list)):
+        left_feature, right_feature = lefts[i], rights[i]
+        psize, dilate = psize_list[i], dilate_list[i]
 
-        lefts = torch.split(left_feature, left_feature.shape[1]//4, dim=1)
-        rights = torch.split(right_feature, right_feature.shape[1]//4, dim=1)
+        psizey, psizex = psize[0], psize[1]
+        dilatey, dilatex = dilate[0], dilate[1]
 
-        C = C // 4
+        ry = psizey // 2 * dilatey
+        rx = psizex // 2 * dilatex
+        x_grid, y_grid = torch.meshgrid(torch.arange(-rx, rx + 1, dilatex, device=left_feature.device), 
+                                torch.arange(-ry, ry + 1, dilatey, device=left_feature.device), indexing='xy')
 
-        if small_patch:
-            psize_list = [(3, 3), (3, 3), (3, 3), (3, 3)]
-            dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
-        else:
-            psize_list = [(1, 9), (1, 9), (1, 9), (1, 9)]
-            dilate_list = [(1, 1), (1, 1), (1, 1), (1, 1)]
+        offsets = torch.stack((x_grid, y_grid))
+        offsets = offsets.reshape(2, -1).permute(1, 0)
+        for d in sorted((0, 2, 3)):
+            offsets = offsets.unsqueeze(d)
+        offsets = offsets.repeat_interleave(N, dim=0)
+        offsets = offsets + extra_offset
 
-        search_num = 9
-        extra_offset = extra_offset.reshape(N, search_num, 2, H, W).permute(0, 1, 3, 4, 2) # [N, search_num, 1, 1, 2]
+        flow_coords = coords + flow  # [N, 2, H, W]
+        flow_coords = flow_coords.permute(0, 2, 3, 1)  # [N, H, W, 2]
+        flow_coords = torch.unsqueeze(flow_coords, 1) + offsets
+        flow_coords = flow_coords.reshape(N, -1, W, 2)  # [N, search_num*H, W, 2]
 
-        corrs = []
-        for i in range(len(psize_list)):
-            left_feature, right_feature = lefts[i], rights[i]
-            psize, dilate = psize_list[i], dilate_list[i]
+        right_feature = bilinear_sampler(
+            right_feature, flow_coords
+        )  # [N, C, search_num*H, W]
+        right_feature = right_feature.reshape(N, C, -1, H, W)  # [N, C, search_num, H, W]
+        left_feature = left_feature.unsqueeze(2).repeat_interleave(right_feature.shape[2], dim=2)
 
-            psizey, psizex = psize[0], psize[1]
-            dilatey, dilatex = dilate[0], dilate[1]
+        corr = torch.mean(left_feature * right_feature, dim=1)
 
-            ry = psizey // 2 * dilatey
-            rx = psizex // 2 * dilatex
-            x_grid, y_grid = torch.meshgrid(torch.arange(-rx, rx + 1, dilatex, device=self.fmap1.device), 
-                                    torch.arange(-ry, ry + 1, dilatey, device=self.fmap1.device), indexing='xy')
+        corrs.append(corr)
 
-            offsets = torch.stack((x_grid, y_grid))
-            offsets = offsets.reshape(2, -1).permute(1, 0)
-            for d in sorted((0, 2, 3)):
-                offsets = offsets.unsqueeze(d)
-            offsets = offsets.repeat_interleave(N, dim=0)
-            offsets = offsets + extra_offset
+    final_corr = torch.cat(corrs, dim=1)
 
-            coords = self.coords + flow  # [N, 2, H, W]
-            coords = coords.permute(0, 2, 3, 1)  # [N, H, W, 2]
-            coords = torch.unsqueeze(coords, 1) + offsets
-            coords = coords.reshape(N, -1, W, 2)  # [N, search_num*H, W, 2]
-
-            right_feature = bilinear_sampler(
-                right_feature, coords
-            )  # [N, C, search_num*H, W]
-            right_feature = right_feature.reshape(N, C, -1, H, W)  # [N, C, search_num, H, W]
-            left_feature = left_feature.unsqueeze(2).repeat_interleave(right_feature.shape[2], dim=2)
-
-            corr = torch.mean(left_feature * right_feature, dim=1)
-
-            corrs.append(corr)
-
-        final_corr = torch.cat(corrs, dim=1)
-
-        return final_corr
+    return final_corr

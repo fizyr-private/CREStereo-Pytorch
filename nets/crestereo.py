@@ -6,7 +6,8 @@ import torch.nn.functional as F
 
 from .update import BasicUpdateBlock
 from .extractor import BasicEncoder
-from .corr import AGCL
+from .corr import corr_iter, corr_att_offset
+from .utils import coords_grid
 
 from .attention import position_encoding_sine, LocalFeatureTransformer
 
@@ -132,10 +133,6 @@ class CREStereo(nn.Module):
             for x in [fmap1_dw16, fmap2_dw16]
         ]
 
-        corr_fn = AGCL(fmap1, fmap2)
-        corr_fn_dw8 = AGCL(fmap1_dw8, fmap2_dw8)
-        corr_fn_att_dw16 = AGCL(fmap1_dw16, fmap2_dw16, att=self.cross_att_fn)
-
         # Cascaded refinement (1/16 + 1/8 + 1/4)
         predictions = []
         flow: Optional[torch.Tensor] = None
@@ -154,6 +151,7 @@ class CREStereo(nn.Module):
 
             # Recurrent Update Module
             # RUM: 1/16
+            coords = coords_grid(fmap1_dw16.shape[0], fmap1_dw16.shape[2], fmap1_dw16.shape[3], fmap1_dw16.device)
             for itr in range(self.iters // 2):
                 if itr % 2 == 0:
                     small_patch = False
@@ -161,8 +159,8 @@ class CREStereo(nn.Module):
                     small_patch = True
 
                 flow_dw16 = flow_dw16.detach()
-                out_corrs = corr_fn_att_dw16(
-                    flow_dw16, offset_dw16, small_patch=small_patch
+                out_corrs = corr_att_offset(
+                    coords, fmap1_dw16, fmap2_dw16, flow_dw16, offset_dw16, small_patch=small_patch, att=self.cross_att_fn
                     )
 
                 net_dw16, up_mask, delta_flow = self.update_block(
@@ -191,6 +189,7 @@ class CREStereo(nn.Module):
                 raise RuntimeError("flow is unexpectedly None")
 
             # RUM: 1/8
+            coords = coords_grid(fmap1_dw8.shape[0], fmap1_dw8.shape[2], fmap1_dw8.shape[3], fmap1_dw8.device)
             for itr in range(self.iters // 2):
                 if itr % 2 == 0:
                     small_patch = False
@@ -198,7 +197,7 @@ class CREStereo(nn.Module):
                     small_patch = True
 
                 flow_dw8 = flow_dw8.detach()
-                out_corrs = corr_fn_dw8(flow_dw8, offset_dw8, small_patch=small_patch)
+                out_corrs = corr_att_offset(coords, fmap1_dw8, fmap2_dw8, flow_dw8, offset_dw8, small_patch=small_patch)
 
                 net_dw8, up_mask, delta_flow = self.update_block(
                     net_dw8, inp_dw8, out_corrs, flow_dw8
@@ -223,6 +222,7 @@ class CREStereo(nn.Module):
             )
 
         # RUM: 1/4
+        coords = coords_grid(fmap1.shape[0], fmap1.shape[2], fmap1.shape[3], fmap1.device)
         for itr in range(self.iters):
             if itr % 2 == 0:
                 small_patch = False
@@ -230,7 +230,7 @@ class CREStereo(nn.Module):
                 small_patch = True
 
             flow = flow.detach()
-            out_corrs = corr_fn(flow, None, small_patch=small_patch, iter_mode=True)
+            out_corrs = corr_iter(coords, fmap1, fmap2, flow, small_patch=small_patch)
 
             net, up_mask, delta_flow = self.update_block(net, inp, out_corrs, flow)
 
